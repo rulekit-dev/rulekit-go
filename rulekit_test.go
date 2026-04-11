@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/rulekit/rulekit-go"
+	"github.com/rulekit-dev/rulekit-go"
 )
 
 // ---- helpers ----------------------------------------------------------------
