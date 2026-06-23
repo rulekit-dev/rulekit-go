@@ -5,6 +5,58 @@ import (
 	"strings"
 )
 
+// evalNodeWithTrace evaluates a node and returns output fields plus a trace entry per rule.
+func evalNodeWithTrace(node *RuleNode, dsl *DSL, facts map[string]any) (map[string]any, []TraceEntry, error) {
+	output := make(map[string]any)
+	var trace []TraceEntry
+
+	switch node.Strategy {
+	case StrategyFirstMatch:
+		for _, rule := range node.Rules {
+			matched, err := evalConditions(rule.When, dsl, facts)
+			if err != nil {
+				return nil, nil, fmt.Errorf("node %s, rule %s: %w", node.ID, rule.ID, err)
+			}
+			trace = append(trace, TraceEntry{RuleID: rule.ID, RuleName: rule.Name, NodeID: node.ID, Matched: matched})
+			if matched {
+				for k, v := range rule.Then {
+					output[k] = v
+				}
+				return output, trace, nil
+			}
+		}
+
+	case StrategyAllMatches:
+		anyMatched := false
+		for _, rule := range node.Rules {
+			matched, err := evalConditions(rule.When, dsl, facts)
+			if err != nil {
+				return nil, nil, fmt.Errorf("node %s, rule %s: %w", node.ID, rule.ID, err)
+			}
+			trace = append(trace, TraceEntry{RuleID: rule.ID, RuleName: rule.Name, NodeID: node.ID, Matched: matched})
+			if matched {
+				anyMatched = true
+				for k, v := range rule.Then {
+					output[k] = v
+				}
+			}
+		}
+		if anyMatched {
+			return output, trace, nil
+		}
+
+	default:
+		return nil, nil, fmt.Errorf("rulekit: node %s: unknown strategy %q", node.ID, node.Strategy)
+	}
+
+	if node.Default != nil {
+		for k, v := range node.Default {
+			output[k] = v
+		}
+	}
+	return output, trace, nil
+}
+
 // evalNode evaluates a single RuleNode against the current fact map.
 // Returns a map of output field assignments.
 func evalNode(node *RuleNode, dsl *DSL, facts map[string]any) (map[string]any, error) {

@@ -114,6 +114,130 @@ func Load(data []byte) (*Ruleset, error) {
 	return &Ruleset{dsl: dsl, nodeByID: nodeByID, edgesFrom: edgesFrom}, nil
 }
 
+// TraceEntry records the outcome of a single rule evaluation.
+type TraceEntry struct {
+	RuleID   string `json:"rule_id"`
+	RuleName string `json:"rule_name"`
+	NodeID   string `json:"node_id"`
+	Matched  bool   `json:"matched"`
+}
+
+// EvalResult holds the output and per-rule trace from an evaluation.
+type EvalResult struct {
+	Output map[string]any
+	Trace  []TraceEntry
+}
+
+// EvalWithTrace runs the ruleset and returns both output fields and a per-rule trace.
+func (r *Ruleset) EvalWithTrace(ctx context.Context, input map[string]any) (*EvalResult, error) {
+	facts := make(map[string]any, len(input))
+	for k, v := range input {
+		facts[k] = v
+	}
+	output := make(map[string]any)
+	var trace []TraceEntry
+
+	nodeID := r.dsl.Entry
+	for {
+		node, ok := r.nodeByID[nodeID]
+		if !ok {
+			return nil, fmt.Errorf("rulekit: node %q not found during eval", nodeID)
+		}
+
+		nodeOutput, nodeTrace, err := evalNodeWithTrace(node, &r.dsl, facts)
+		if err != nil {
+			return nil, err
+		}
+		trace = append(trace, nodeTrace...)
+		for k, v := range nodeOutput {
+			output[k] = v
+			facts[k] = v
+		}
+
+		outEdges := r.edgesFrom[nodeID]
+		if len(outEdges) == 0 {
+			break
+		}
+		if len(outEdges) == 1 {
+			edge := outEdges[0]
+			remapped := remapEdge(edge, nodeOutput)
+			for k, v := range remapped {
+				facts[k] = v
+			}
+			nodeID = edge.To
+		} else {
+			for _, edge := range outEdges {
+				subFacts := copyMap(facts)
+				remapped := remapEdge(edge, nodeOutput)
+				for k, v := range remapped {
+					subFacts[k] = v
+				}
+				subResult, err := r.evalFromWithTrace(ctx, edge.To, subFacts)
+				if err != nil {
+					return nil, err
+				}
+				trace = append(trace, subResult.Trace...)
+				for k, v := range subResult.Output {
+					output[k] = v
+				}
+			}
+			break
+		}
+	}
+	return &EvalResult{Output: output, Trace: trace}, nil
+}
+
+// evalFromWithTrace evaluates the sub-graph starting at nodeID, collecting trace.
+func (r *Ruleset) evalFromWithTrace(ctx context.Context, nodeID string, facts map[string]any) (*EvalResult, error) {
+	output := make(map[string]any)
+	var trace []TraceEntry
+	for {
+		node, ok := r.nodeByID[nodeID]
+		if !ok {
+			return nil, fmt.Errorf("rulekit: node %q not found during eval", nodeID)
+		}
+		nodeOutput, nodeTrace, err := evalNodeWithTrace(node, &r.dsl, facts)
+		if err != nil {
+			return nil, err
+		}
+		trace = append(trace, nodeTrace...)
+		for k, v := range nodeOutput {
+			output[k] = v
+			facts[k] = v
+		}
+		outEdges := r.edgesFrom[nodeID]
+		if len(outEdges) == 0 {
+			break
+		}
+		if len(outEdges) == 1 {
+			edge := outEdges[0]
+			remapped := remapEdge(edge, nodeOutput)
+			for k, v := range remapped {
+				facts[k] = v
+			}
+			nodeID = edge.To
+		} else {
+			for _, edge := range outEdges {
+				subFacts := copyMap(facts)
+				remapped := remapEdge(edge, nodeOutput)
+				for k, v := range remapped {
+					subFacts[k] = v
+				}
+				subResult, err := r.evalFromWithTrace(ctx, edge.To, subFacts)
+				if err != nil {
+					return nil, err
+				}
+				trace = append(trace, subResult.Trace...)
+				for k, v := range subResult.Output {
+					output[k] = v
+				}
+			}
+			break
+		}
+	}
+	return &EvalResult{Output: output, Trace: trace}, nil
+}
+
 // Eval runs the ruleset against the provided input facts and returns output fields.
 //
 // Missing input fields are treated as the zero value for their type:
